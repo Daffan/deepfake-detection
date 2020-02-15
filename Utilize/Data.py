@@ -63,6 +63,7 @@ def play_video(video_path):
     data_url = "data:video/mp4;base64," + b64encode(video_url).decode()
     return HTML("""<video width=500 controls><source src="%s" type="video/mp4"></video>""" % data_url)
 
+# Suporting Function in cropping the videos
 def add_margin(box, margin, width, height): 
 
     box = [int(x) for x in box]
@@ -97,7 +98,19 @@ def crop_face_from_frame(image, model_mtcnn = fast_mtcnn, margin = 0, threshold 
 
     return cropped_face
 
+def load_frame(frame, face_path, frame_count, missing_list = []):
 
+    if os.path.exists(face_path):
+        cropped_face = cv2.imread(face_fn)
+        return cropped_face, False
+    elif '_%04d' %(frame_count) not in missing_list
+        cropped_face = crop_face_from_frame(image, model_mtcnn)
+        if type(cropped_face) == type(None):
+            missing_list.append('_%04d' %(frame_count))
+            return None, True
+        else:
+            cv2.imwrite(face_path, cropped_Face)
+            return cropped_face, False
 
 def extract_face_from_video(video_path, output_path, 
                             model_mtcnn = fast_mtcnn, 
@@ -106,13 +119,7 @@ def extract_face_from_video(video_path, output_path,
     """
     detect video frames with mtcnn model and save the cropped face into image files
     
-    Keyword Arguments:
-        video_path {str} -- the path refering a video file
-        model_mtcnn {nn.Module} -- the model used to detect face
-        output_path {str} -- the path refering the dictionary to save output images
-        start_frame {number},  end_frame{number} -- walk through the video from 0 to 300 frames
-        n_frames {number} -- number of frames excute face detection
-        margin {int number} -- expand the face by margin pixels
+    Keyword Arguments
     
     """
     pred_frames = [int(round(x)) for x in np.linspace(start_frame, end_frame, n_frames)]
@@ -138,7 +145,7 @@ def extract_face_from_video(video_path, output_path,
                                                 margin = margin, threshold = threshold)
             if type(cropped_face) is not type(None):
                 status = cv2.imwrite(os.path.join(output_path, video_fn + 
-                                    '_{:03d}.jpg'.format(frame_num)), cropped_face)
+                                    '_{:04d}.jpg'.format(frame_num)), cropped_face)
             else:
                 # If not detected, try the next frame
                 pred_frames.append(frame_num + 1)
@@ -147,6 +154,66 @@ def extract_face_from_video(video_path, output_path,
             break
 
 ### pytorch defined class of dataset and dataloader ###
+
+def video_file_multiframe(video_path, face_base_path, model, missing_list = []
+                                model_mtcnn = fast_mtcnn, transform = 'test',
+                                device = 'cuda:0', n_frames=10, 
+                                margin = 0, frame_interval = 10, outlier = 15, threshold = [40, 300]):
+    """
+    Predict and give result as numpy array
+    """
+    video_fn = video_path.split("/")[-1].split('.')[0]
+    predictions = []
+    # print('Starting: {}'.format(video_path))
+
+    # Read and write
+    reader = cv2.VideoCapture(video_path)
+
+    # Frame numbers and length of output video
+    boxes = None
+    
+    image_list = []
+    size_list = []
+    frame_count = 0
+    flag = False
+
+    while reader.isOpened():
+        _, frame = reader.read()
+        
+        if frame is None:
+            break
+
+        if frame_count%frame_interval == 0 or flag: 
+
+            flag = False
+            cropped_face = None
+            face_path = os.path.join(face_base_path, video_fn+'_%04d' %(frame_count)+'.jpg')
+
+            cropped_face, flag = load_frame(frame, face_path, frame_count, missing_list)
+
+            if not flag
+                
+                cropped_face = cv2.cvtColor(cropped_face, cv2.COLOR_BGR2RGB)
+                cropped_face = Image.fromarray(cropped_face)
+                width, height = cropped_face.size
+
+                if (width+height)/2. >threshlod[0] or (width+height)/2. <threshlod[1]:
+                    image_list.append(cropped_face)
+                    size_list.append((width+height)/2.) 
+                else:
+                    flag = True
+
+        if len(size_list) == n_frames:
+
+            selected_index = (np.abs(np.array(size_list)-np.array(size_list).mean())<outlier).tolist()
+            image_list = [image_list[k] for k, boolen in enumerate(selected_index) if boolen]
+            size_list = [size_list[k] for k, boolen in enumerate(selected_index) if boolen] 
+
+        if len(size_list) == n_frames:
+            break
+        frame_count = frame_count +1
+    
+    return size_list, image_list, frame_count
 
 xception_default_data_transforms = {
     'ResNet': transforms.Compose([
@@ -405,15 +472,17 @@ class face_dataset(Dataset):
             
         
 
-class dataset_video():
+class dataset_video(Dataset):
     """
     Class used to manage the dataset with all videos
     """
     
-    def __init__(self, json_path, p = 0.8, face_folder = FACE_PATH, initialize = None):
+    def __init__(self, json_path, p = 0.8, face_folder = FACE_PATH, initialize = None, model_mtcnn = fast_mtcnn, n_frames = 8):
         
         self.json_path = json_path
         self.face_folder = face_folder
+        self.model_mtcnn = fast_mtcnn
+        self.n_frames = 8
 
         if initialize and os.path.exists(json_path):
             os.remove(json_path)
@@ -450,6 +519,28 @@ class dataset_video():
                     self.video_df = self.video_df.drop(index)
 
             self.video_df.to_json(json_path)
+
+
+    def __len__(self):
+
+        return len(self.video_df)
+
+    def __getitem__(self, idx):
+
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        video_fn = self.video_df.index(idx)
+        group = self.video_df.loc[idx, 'group']
+        label = self.video_df.loc[idx, 'label']
+        video_path = os.path.join(GROUP_PATH_DIC[group], video_fn)
+
+        size_list, image_list, frame_count = 
+            video_file_multiframe(video_path, self.face_folder, missing_list = self.missing_list,
+                                    model_mtcnn = self.model_mtcnn, n_frames = self.n_frames
+                                )
+
+        return {'image_list': image_list, 'label': label}
+
 
 
     def get_face_frames(self):
