@@ -100,10 +100,13 @@ def crop_face_from_frame(image, model_mtcnn = fast_mtcnn, margin = 0, threshold 
 
 def load_frame(frame, face_path, frame_count, missing_list = []):
 
+    if type(missing_list) == type(None):
+        missing_list = []
+
     if os.path.exists(face_path):
         cropped_face = cv2.imread(face_fn)
         return cropped_face, False
-    elif '_%04d' %(frame_count) not in missing_list
+    elif '_%04d' %(frame_count) not in missing_list:
         cropped_face = crop_face_from_frame(image, model_mtcnn)
         if type(cropped_face) == type(None):
             missing_list.append('_%04d' %(frame_count))
@@ -155,7 +158,7 @@ def extract_face_from_video(video_path, output_path,
 
 ### pytorch defined class of dataset and dataloader ###
 
-def video_file_multiframe(video_path, face_base_path, model, missing_list = []
+def video_file_multiframe(video_path, face_base_path, model, missing_list = [],
                                 model_mtcnn = fast_mtcnn, transform = 'test',
                                 device = 'cuda:0', n_frames=10, 
                                 margin = 0, frame_interval = 10, outlier = 15, threshold = [40, 300]):
@@ -191,7 +194,7 @@ def video_file_multiframe(video_path, face_base_path, model, missing_list = []
 
             cropped_face, flag = load_frame(frame, face_path, frame_count, missing_list)
 
-            if not flag
+            if not flag:
                 
                 cropped_face = cv2.cvtColor(cropped_face, cv2.COLOR_BGR2RGB)
                 cropped_face = Image.fromarray(cropped_face)
@@ -202,6 +205,8 @@ def video_file_multiframe(video_path, face_base_path, model, missing_list = []
                     size_list.append((width+height)/2.) 
                 else:
                     flag = True
+            else: 
+                missing_list.append('_%04d' %(frame_count))
 
         if len(size_list) == n_frames:
 
@@ -506,7 +511,7 @@ class dataset_video(Dataset):
             self.video_df = pd.concat(video_df_all)
             self.video_df['split'] = np.random.choice(['test', 'train'], 
                                                         size=len(self.video_df), p=[1-p, p])
-            
+            self.video_df['missing_list'] = [None]*len(self.video_df)
             # check existance, make sure all the videos showing in meta exist in the folder
 
             for index in self.video_df.index:
@@ -529,15 +534,15 @@ class dataset_video(Dataset):
 
         if torch.is_tensor(idx):
             idx = idx.tolist()
-        video_fn = self.video_df.index(idx)
-        group = self.video_df.loc[idx, 'group']
-        label = self.video_df.loc[idx, 'label']
+        video_fn = self.video_df.index[idx]
+        group = self.video_df.loc[video_fn, 'group']
+        label = self.video_df.loc[video_fn, 'label']
+        missing_list = self.video_df.loc[video_fn, 'missing_list']
         video_path = os.path.join(GROUP_PATH_DIC[group], video_fn)
 
-        size_list, image_list, frame_count = 
-            video_file_multiframe(video_path, self.face_folder, missing_list = self.missing_list,
-                                    model_mtcnn = self.model_mtcnn, n_frames = self.n_frames
-                                )
+        size_list, image_list, frame_count = video_file_multiframe(video_path, self.face_folder, self.model_mtcnn, missing_list = missing_list,
+                                                                    model_mtcnn = self.model_mtcnn, n_frames = self.n_frames
+                                                                    )
 
         return {'image_list': image_list, 'label': label}
 
