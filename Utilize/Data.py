@@ -119,7 +119,7 @@ def generate_random_image(transform = 'test'):
     im = Image.new('RGB', (299,299))
 
     def ran():
-        return os.urandom(600*600)
+        return os.urandom(299*299)
 
     pixels = zip(ran(), ran(), ran())
     im.putdata(list(pixels))
