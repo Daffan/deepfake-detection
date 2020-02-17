@@ -14,6 +14,14 @@ from Utilize.XceptionNet.xception import *
 import math
 import torchvision
 
+def set_trainable_until(model, layer_name):
+    for i, params in model.named_parameters():
+        params.requires_grad = False
+    layer_list = []
+    for name, params in model.named_parameters():
+        layer_list.append(name)
+        if layer_name in layer_list:
+            params.requires_grad = True
 
 def return_pytorch04_xception(pretrained=True):
     # Raises warning "src not broadcastable to dst" but thats fine

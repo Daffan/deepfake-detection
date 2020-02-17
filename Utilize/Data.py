@@ -65,7 +65,11 @@ def play_video(video_path):
 
 # Suporting Function in cropping the videos
 def add_margin(box, margin, width, height): 
-
+    '''
+    Given a box indicting the the position of cropped face, add margin to that box
+    param: box a list with four numbers indicting x1, x2, y1, y2
+    return: modified box
+    '''
     box = [int(x) for x in box]
                 
     box[0] = (np.array(box[0]-margin).clip(0, width)).tolist()
@@ -78,11 +82,21 @@ def add_margin(box, margin, width, height):
 
 def crop_face_from_frame(image, model_mtcnn = fast_mtcnn, margin = 0, threshold = 0):
 
+    '''
+    Given a full image, use mtcnn face detection model to detect a face and return the cropped face image
+    params: 
+        image: [ndarray] -- input image to be cropped
+        model_mtcnn: [model_mtcnn] -- default value defined in Utilize.Detection
+        margin: [int] -- margin to be added to the cropped face
+        threshold: [int] -- give up the cropped face if the (width + height)/2 is smaller than threshold
+    '''
+
     cropped_face = None
     height, width = image.shape[:2]
 
+    # detect the face
     boxes, probs = model_mtcnn.detect(Image.fromarray(image), landmarks = False)
-
+    # if detected, add amrgin, filter by size
     if type(boxes) != type(None):
 
         for box in boxes:
@@ -98,22 +112,54 @@ def crop_face_from_frame(image, model_mtcnn = fast_mtcnn, margin = 0, threshold 
 
     return cropped_face
 
-def load_frame(frame, face_path, frame_count, missing_list = []):
+def generate_random_image(transform = 'test'):
+    '''
+    Generate a random image, transform if necessary
+    '''
+    im = Image.new('RGB', (299,299))
 
-    if type(missing_list) == type(None):
-        missing_list = []
+    def ran():
+        return os.urandom(600*600)
 
-    if os.path.exists(face_path):
-        cropped_face = cv2.imread(face_fn)
+    pixels = zip(ran(), ran(), ran())
+    im.putdata(list(pixels))
+
+    if transform is not None:
+        im = xception_default_data_transforms[transform](im)
+
+    return im 
+
+def load_frame(frame, face_path, frame_count, missing_list = [], model_mtcnn = fast_mtcnn, missing_list_new = []):
+    '''
+    Load a frame 
+    params:
+        frame: [ndarray] -- input frame from video
+        face_path: [str] -- str path refer to the folder containing all the cropped face
+        frame_count: current frame number when reading the frame from video
+        model_mtcnn: [model_mtcnn] -- default value defined in Utilize.Detection
+        missing_list: [list] list constains the index of frames that are not able to detect a face
+        missing_list_new: if new frames fail to detect a face, add it in missing_list_new
+    return:
+        cropped_face: [ndarray] -- cropped face
+        flage: [boolen] True if fail to load a face, False if succeed
+    '''
+    # try read the face from this frame
+    cropped_face = cv2.imread(face_path)
+
+    # if succeed, return the face
+    if cropped_face is not None: 
         return cropped_face, False
-    elif '_%04d' %(frame_count) not in missing_list:
-        cropped_face = crop_face_from_frame(image, model_mtcnn)
+
+    elif ('%04d' %(frame_count)) not in missing_list:
+        cropped_face = crop_face_from_frame(frame, model_mtcnn)
         if type(cropped_face) == type(None):
-            missing_list.append('_%04d' %(frame_count))
+            missing_list_new.append('%04d' %(frame_count))
             return None, True
         else:
-            cv2.imwrite(face_path, cropped_Face)
+            cv2.imwrite(face_path, cropped_face)
             return cropped_face, False
+    else:
+        return None, True
 
 def extract_face_from_video(video_path, output_path, 
                             model_mtcnn = fast_mtcnn, 
@@ -156,14 +202,28 @@ def extract_face_from_video(video_path, output_path,
         if frame_num >= end_frame:
             break
 
-### pytorch defined class of dataset and dataloader ###
 
-def video_file_multiframe(video_path, face_base_path, model, missing_list = [],
-                                model_mtcnn = fast_mtcnn, transform = 'test',
-                                device = 'cuda:0', n_frames=10, 
+def video_file_multiframe(video_path, face_base_path, missing_list = [],
+                                model_mtcnn = fast_mtcnn, transform = 'test', n_frames=10, 
                                 margin = 0, frame_interval = 10, outlier = 15, threshold = [40, 300]):
     """
-    Predict and give result as numpy array
+    Get the face image list from a video
+    params:
+        video_path: [str] -- path refers to a video
+        face_base_path: [str] -- path refers to the folder contains all cropped face
+        missing_list: [list] -- list contains the indexs of frames that fail to detect a face
+        model_mtcnn: [model_mtcnn] -- model to detect a face
+        transform: [str] -- key word of xception_default_data_transforms to decide whether to transform the face image
+        n_frames: [int] -- detect 10 face in total
+        frame_interval: [int] -- try to detect face every frame_interval frames, if fail, try the next frame
+        outlier: [int] -- when detected required number of frames, drop the items with size outlier larger than the average size
+        threshold: [list, dtype = int]: -- drop the face with size smaller than 40 and larger than 300
+    return:
+        missing_list_new: [list] -- contains the indexs of all the frames failed to detect a face and not in the missing_list
+        size_list: [list] list of size of all the images
+        image_list: [list] list contains all the image. if transform is None, the item will show in PIL format; otherwise, in ndarray
+        frame_count: [list] index of where the frame read stopped
+
     """
     video_fn = video_path.split("/")[-1].split('.')[0]
     predictions = []
@@ -177,49 +237,57 @@ def video_file_multiframe(video_path, face_base_path, model, missing_list = [],
     
     image_list = []
     size_list = []
+    missing_list_new = []
     frame_count = 0
     flag = False
 
+    # start to read the frame
     while reader.isOpened():
         _, frame = reader.read()
         
+        # break if video ends
         if frame is None:
             break
-
+        # start to crop the face if it is the frame or failed to crop a face in the previous frame
         if frame_count%frame_interval == 0 or flag: 
 
             flag = False
             cropped_face = None
             face_path = os.path.join(face_base_path, video_fn+'_%04d' %(frame_count)+'.jpg')
 
-            cropped_face, flag = load_frame(frame, face_path, frame_count, missing_list)
+            # Load this frame, if failed, cropped face is None, flag if True
+            cropped_face, flag = load_frame(frame, face_path, frame_count, missing_list, model_mtcnn = model_mtcnn, missing_list_new = missing_list_new)
 
+            # If successfully load 
             if not flag:
                 
                 cropped_face = cv2.cvtColor(cropped_face, cv2.COLOR_BGR2RGB)
+                width, height = cropped_face.shape[:2]
                 cropped_face = Image.fromarray(cropped_face)
-                width, height = cropped_face.size
 
-                if (width+height)/2. >threshlod[0] or (width+height)/2. <threshlod[1]:
+                # transform the image
+                if transform is not None:
+                    cropped_face = xception_default_data_transforms[transform](cropped_face)
+                # filter by size decided by threshold
+                if (width+height)/2. >threshold[0] or (width+height)/2. <threshold[1]:
                     image_list.append(cropped_face)
                     size_list.append((width+height)/2.) 
                 else:
                     flag = True
-            else: 
-                missing_list.append('_%04d' %(frame_count))
-
+        # if detected the required number, drop outliers 
         if len(size_list) == n_frames:
 
             selected_index = (np.abs(np.array(size_list)-np.array(size_list).mean())<outlier).tolist()
             image_list = [image_list[k] for k, boolen in enumerate(selected_index) if boolen]
             size_list = [size_list[k] for k, boolen in enumerate(selected_index) if boolen] 
-
+        # if there is nothing to drop, finish the detecting
         if len(size_list) == n_frames:
             break
         frame_count = frame_count +1
     
-    return size_list, image_list, frame_count
+    return missing_list_new, size_list, image_list, frame_count
 
+# Default transforms
 xception_default_data_transforms = {
     'ResNet': transforms.Compose([
         transforms.Resize((224, 224)),
@@ -367,136 +435,32 @@ for i in range(0, 50):
         GROUP_PATH_DIC[i] = BASE_PATH_1 + 'dfdc_train_part_{00}'.format(i)
     else:
         GROUP_PATH_DIC[i] = BASE_PATH_2 + 'dfdc_train_part_{00}'.format(i)
-
-
-class face_dataset(Dataset):
-    
-    def __init__(self, video_df, dataset_folder, transform = None, selection_stratagy = None, num_frame = 8):
-        
-        self.transform = transform
-        self.face_folder = dataset_folder
-        self.video_df = video_df
-        self.selection_stratagy = selection_stratagy
-        self.num_frame = num_frame
-        
-        video_list = [0]
-        frame_index_list = [[0]]
-        label_list = [0]
-        split_list = [0]
-        
-        for image in sorted(os.listdir(dataset_folder)):
-            if image.split('.')[-1] == 'jpg':
-                if image.split('_')[0] == video_list[-1]:
-                    frame_index_list[-1].append(image.split('_')[-1].split('.')[0])
-
-                else:
-                    if video_list[0] == 0:
-                        video_list.pop(-1)
-                        frame_index_list.pop(-1)
-                        label_list.pop(-1)
-                        split_list.pop(-1)
-
-                    video_list.append(image.split('_')[0])
-                    video = image.split('_')[0]+'.mp4'
-                    split = video_df.loc[video, 'split']
-                    label = video_df.loc[video, 'label']
-                    label_list.append(label)
-                    split_list.append(split)
-                    frame_index_list.append([image.split('_')[-1].split('.')[0]])
-                
-        face_df = pd.DataFrame({'video': video_list, 'split': split_list, 'frames': frame_index_list, 'label': label_list})
-        
-        self.face_df = face_df
-        
-    def __len__(self):
-        
-        return len(self.face_df)
-    
-    def __getitem__(self, idx):
-        
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-        
-        image_list = []
-        size_list = []
-        if self.selection_stratagy == '1':
-            index=0
-            while True:
-                i = index % len(self.face_df.loc[idx, 'frames'])
-                video = self.face_df.loc[idx, 'video']
-                frame = self.face_df.loc[idx, 'frames'][i]
-                img_path = os.path.join(self.face_folder, video+ '_'+ frame+'.jpg')
-                image = Image.open(img_path)
-                height, width = image.size
-                if self.transform:
-                    image = self.transform(image)
-                if (height+ width)/2. >60 and (height+ width)/2. <280:
-                    image_list.append(image)
-                    size_list.append((height+ width)/2.)
-                    if abs((height+ width)/2. - sum(size_list)/len(size_list)) > 10:
-                        image_list.pop(-1)
-                        size_list.pop(-1)
-                index = index + 1
-                if len(image_list) == 5:
-                    break
-                elif index > 5*len(self.face_df.loc[idx, 'frames']):
-                    image_list = 5*[image]
-
-            label = self.face_df.loc[idx, 'label']
-        elif self.selection_stratagy == '2':
-            index = 0
-            while True:
-                i = index % len(self.face_df.loc[idx, 'frames'])
-                video = self.face_df.loc[idx, 'video']
-                frame = self.face_df.loc[idx, 'frames'][i]
-                img_path = os.path.join(self.face_folder, video+ '_'+ frame+'.jpg')
-                image = Image.open(img_path)
-                height, width = image.size
-                if self.transform:
-                    image = self.transform(image)
-                if (height+ width)/2. >60 and (height+ width)/2. <280:
-                    image_list.append(image)
-                    size_list.append((height+ width)/2.)
-                if len(size_list) == self.num_frame:
-                    selected_index = (np.abs(np.array(size_list)-np.array(size_list).mean())<15).tolist()
-                    image_list = [image_list[k] for k, boolen in enumerate(selected_index) if boolen]
-                    size_list = [size_list[k] for k, boolen in enumerate(selected_index) if boolen]
-                if len(size_list) == self.num_frame:
-                    break
-                elif index > 1000:
-                    image_list = [image]*self.num_frame
-                    break
-                index = index +1
-            label = self.face_df.loc[idx, 'label']
-        
-        sample = {'image_list': image_list, 'label': label}
-        
-        return sample
-        
-                
-            
-        
+      
 
 class dataset_video(Dataset):
     """
     Class used to manage the dataset with all videos
     """
     
-    def __init__(self, json_path, p = 0.8, face_folder = FACE_PATH, initialize = None, model_mtcnn = fast_mtcnn, n_frames = 8):
+    def __init__(self, json_path, p = 0.8, face_folder = FACE_PATH, initialize = None, model_mtcnn = fast_mtcnn, transform = None, n_frames = 8, frame_interval = 2):
         
+        # initialize all the parameters
         self.json_path = json_path
         self.face_folder = face_folder
         self.model_mtcnn = fast_mtcnn
+        self.frame_interval = frame_interval
+        self.transform = transform
         self.n_frames = 8
 
+        # if initialize, delect the json file before
         if initialize and os.path.exists(json_path):
             os.remove(json_path)
-
+        # if json file exist, just read the json file
         if os.path.exists(json_path):
 
             self.video_df = pd.read_json(json_path)
             self.p = self.video_df.groupby(['split']).count()['label'][1]/self.video_df.groupby(['split']).count()['label'].sum()
-            
+        # if fail to find the json file, collect json file again
         else:
             
             video_df_all = []
@@ -511,13 +475,14 @@ class dataset_video(Dataset):
             self.video_df = pd.concat(video_df_all)
             self.video_df['split'] = np.random.choice(['test', 'train'], 
                                                         size=len(self.video_df), p=[1-p, p])
-            self.video_df['missing_list'] = [None]*len(self.video_df)
+            self.video_df['missing_list'] = None
             # check existance, make sure all the videos showing in meta exist in the folder
 
-            for index in self.video_df.index:
+            for index in tqdm(self.video_df.index):
         
                 group = self.video_df.loc[index, 'group']
                 video_path = os.path.join(GROUP_PATH_DIC[group], index)
+                self.video_df.loc[index, 'missing_list'] = [['-1']]
 
                 if not os.path.exists(video_path):
 
@@ -534,19 +499,27 @@ class dataset_video(Dataset):
 
         if torch.is_tensor(idx):
             idx = idx.tolist()
+
         video_fn = self.video_df.index[idx]
         group = self.video_df.loc[video_fn, 'group']
         label = self.video_df.loc[video_fn, 'label']
         missing_list = self.video_df.loc[video_fn, 'missing_list']
+
         video_path = os.path.join(GROUP_PATH_DIC[group], video_fn)
 
-        size_list, image_list, frame_count = video_file_multiframe(video_path, self.face_folder, self.model_mtcnn, missing_list = missing_list,
-                                                                    model_mtcnn = self.model_mtcnn, n_frames = self.n_frames
+        missing_list_new, size_list, image_list, frame_count = video_file_multiframe(video_path, self.face_folder, missing_list = missing_list,
+                                                                    model_mtcnn = self.model_mtcnn, n_frames = self.n_frames, 
+                                                                    transform = self.transform, frame_interval = self.frame_interval
                                                                     )
+        for missing in missing_list_new:
+            self.video_df.loc[video_fn, 'missing_list'].append(missing)
+
+        if len(size_list) == 0:
+            image_list = [generate_random_image(transform = self.transform)]
+            
+        image_list = ((int(self.n_frames/len(image_list))+1)*image_list)[:self.n_frames]
 
         return {'image_list': image_list, 'label': label}
-
-
 
     def get_face_frames(self):
 
@@ -602,11 +575,37 @@ class dataset_video(Dataset):
 
         return dataset
 
-    def assign_set_by_group(self, seed = 100):
+    def assign_set_by_group(self, p = 0.1,seed = 100):
     
         self.video_df.loc[self.video_df['group']==50, 'split'] = 'None'
-        group_list = ['train']*45+['test']*5
+        group_list = ['train']*(50-int(50*p))+['test']*int(50*p)
         random.Random(seed).shuffle(group_list)
         group_list = group_list+['None']
         self.video_df['split'] = [group_list[self.video_df.loc[idx, 'group']] for idx in self.video_df.index]
         self.group_list = group_list
+
+    def select_set_by_label_same_original(self, random_state = 101):
+
+        df = self.video_df
+        df_real = df.loc[df['label'] == 'REAL']
+        df_fake = pd.DataFrame({})
+        for idx in df_real.index:
+            t = df.loc[df['original']==idx].sample(1, random_state = random_state)
+            df_fake = df_fake.append(t)
+        df = pd.concat([df_real, df_fake])
+
+        self.video_df = df
+
+    def select_set_by_label_different_original(self, random_state = 101):
+
+        df = self.video_df
+        df_real = df.loc[df['label'] == 'REAL']
+        df_real_1 = df_real.sample(frac = 0.5, random_state = 101)
+        df_real_2 = df_real.drop(df_real_1.index)
+        df_fake = pd.DataFrame({})
+        for idx in df_real_2.index:
+            t = df.loc[df['original']==idx].sample(1, random_state = random_state)
+            df_fake = df_fake.append(t)
+        df = pd.concat([df_real_1, df_fake])
+
+        self.video_df = df

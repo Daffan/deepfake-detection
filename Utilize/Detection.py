@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 fast_mtcnn = MTCNN(
     image_size = 100,
     margin=14,
-    thresholds = [0.6, 0.7, 0.7],
+    thresholds = [0.5, 0.6, 0.6],
     keep_all=True,
     device = 'cpu'
 )
