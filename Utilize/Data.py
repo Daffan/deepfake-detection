@@ -288,6 +288,9 @@ def video_file_multiframe(video_path, face_base_path, missing_list = [],
     return missing_list_new, size_list, image_list, frame_count
 
 # Default transforms
+
+FACE_PATH = '../../dev/shm/deepfake_all_data_set/all_data_set/face'
+
 xception_default_data_transforms = {
     'ResNet': transforms.Compose([
         transforms.Resize((224, 224)),
@@ -312,114 +315,79 @@ xception_default_data_transforms = {
 }
 
 class dataset_face(Dataset):
-    """Deepfake dataset"""
     
-    def __init__(self, video_df, dataset_folder, split = 'train', transform = 'test', device = 'cpu'):
-        """
-        Initialize the dataset
+    def __init__(self, video_df, dataset_folder = FACE_PATH, transform = None, n_frames = 8):
         
-        Keyword Arguments:
-        dataset_folder: {str} -- the folder contains all the cropped face data and videos
-        transfrom: {boolean} -- to transfrom the image? 
-        """
-        self.dataset_folder = dataset_folder
-        self.video_df = video_df
-        self.device = device
         self.transform = transform
+        self.face_folder = dataset_folder
+        self.video_df = video_df
+        self.n_frames = n_frames
+        video_list = [0]
+        frame_index_list = [[0]]
+        label_list = [0]
+        split_list = [0]
         
-        ### Initilize image frame ###
-        
-        img_name = []
-        img_label = []
-        
-        for file_name in os.listdir(dataset_folder):
-        
-            if file_name.split('.')[-1] == 'jpg':
-                index = file_name.split('_')[0]+'.mp4'
-                
-                if video_df.loc[index, 'split'] == split:
+        for image in sorted(os.listdir(dataset_folder)):
+            video = image.split('_')[0]+'.mp4'
+            if image.split('.')[-1] == 'jpg' and video in video_df.index:
+                if image.split('_')[0] == video_list[-1]:
+                    frame_index_list[-1].append(image.split('_')[-1].split('.')[0])
 
-                    img_name.append(file_name)
-    
-                    if video_df.loc[index, 'label'] == 'FAKE':
-                        img_label.append(1.0)
-                    else:
-                        img_label.append(0.0)
-                    
-        self.image_df = pd.DataFrame({'imagename': img_name, 'label': img_label})
+                else:
+                    if video_list[0] == 0:
+                        video_list.pop(-1)
+                        frame_index_list.pop(-1)
+                        label_list.pop(-1)
+                        split_list.pop(-1)
+
+                    video_list.append(image.split('_')[0])
+                    split = video_df.loc[video, 'split']
+                    label = video_df.loc[video, 'label']
+                    label_list.append(label)
+                    split_list.append(split)
+                    frame_index_list.append([image.split('_')[-1].split('.')[0]])
+                
+        face_df = pd.DataFrame({'video': video_list, 'split': split_list, 'frames': frame_index_list, 'label': label_list})
         
+        self.face_df = face_df
         
     def __len__(self):
         
-        return len(self.image_df)
-        
+        return len(self.face_df)
+    
     def __getitem__(self, idx):
         
         if torch.is_tensor(idx):
             idx = idx.tolist()
         
-        img_name = os.path.join(self.dataset_folder, self.image_df.loc[idx, 'imagename'])
-        image = Image.open(img_name)
-        label = self.image_df.loc[idx, 'label']
-        
-        if self.transform:
+        image_list = []
+        size_list = []
+        label = self.face_df.loc[idx, 'label']
+        video = self.face_df.loc[idx, 'video']
+        for frame in self.face_df.loc[idx, 'frames']:
             
-            image = xception_default_data_transforms[self.transform](image)
+            img_path = os.path.join(self.face_folder, video+ '_'+ frame+'.jpg')
+            image = Image.open(img_path)
+            height, width = image.size
+            if self.transform is not None:
+                image = xception_default_data_transforms[self.transform](image)
+            if (height+ width)/2. >40 and (height+ width)/2. <300:
+                image_list.append(image)
+                size_list.append((height+ width)/2.)
+        if len(size_list) != 0:
+            selected_index = (np.abs(np.array(size_list)-np.array(size_list).mean())<2*np.array(size_list).std()).tolist()
+            image_list = [image_list[k] for k, boolen in enumerate(selected_index) if boolen]
+            size_list = [size_list[k] for k, boolen in enumerate(selected_index) if boolen]
+        if len(size_list) == 0:
+            image_list = [image]
             
-            if self.device:
-                image = image.to(device)
+        image_list = ((int(self.n_frames/len(image_list))+1)*image_list)[:self.n_frames]
         
-        sample = {'image': image, 'label': label} 
+        sample = {'image_list': image_list, 'label': label}
         
         return sample
-    
-    def equal_weight(self, mode = 'sampleFAKE'):
-    
-        if mode == 'sampleFAKE':
-        
-            img_df = pd.concat([self.image_df.loc[self.image_df['label']==1].sample(len(self.image_df.loc[self.image_df['label']==0])),
-                                self.image_df.loc[self.image_df['label']==0]])
-    
-        elif mode == 'expandREAL':
-        
-            img_df = self.image_df.copy()
-            img_df = img_df.loc[img_df.loc[img_df['label']==0].index.repeat(7)].append(img_df).reset_index(drop=True)
-    
-        self.image_df = img_df
-    
-    def reload(self):
-        
-        img_name = []
-        img_label = []
-        
-        for file_name in os.listdir(self.dataset_folder):
-        
-            if file_name.split('.')[-1] == 'jpg':
-                index = file_name.split('_')[0]+'.mp4'
-    
-                img_name.append(file_name)
-    
-                if self.video_df.loc[index, 'label'] == 'FAKE':
-                    img_label.append(1)
-                else:
-                    img_label.append(0)
-                    
-        self.image_df = pd.DataFrame({'imagename': img_name, 'label': img_label})
 
-    def filter_by_size(self, threshold = 60):
 
-        l = len(self.image_df)
-
-        for i in range(l):
-
-            width, height = self[i]['image'].size
-            avg_size = (width+height)/2
-
-            if avg_size < threshold:
-
-                self.image_df = self.image_df.drop(i)
-
-        self.image_df = self.image_df.reset_index(drop = True)
 
 ### Video Dataset Manager ###
 
@@ -568,10 +536,10 @@ class dataset_video(Dataset):
         self.get_face_frames()
         print('Finish extracting faces!')
 
-    def generate_face_dataset(self, split = 'train', transform = 'test', device = 'cuda:0'):
+    def generate_face_dataset(self):
 
-        dataset = dataset_face(self.video_df, self.face_folder, split = split,
-                                transform = transform, device = device)
+        dataset = dataset_face(self.video_df, self.face_folder,
+                                transform = self.transform, n_frames = self.n_frames)
 
         return dataset
 
